@@ -396,20 +396,24 @@ function refreshUrlLibrary() {
 }
 
 let adminPasswordDialog;
-let resolveAdminPassword;
+let resolveAdminAccess;
 
-function promptForAdminPassword() {
+function promptForAdminAccess({ channelName = null } = {}) {
     if (adminPasswordDialog?.open) return Promise.resolve(null);
 
     if (!adminPasswordDialog) {
         adminPasswordDialog = document.createElement('dialog');
         adminPasswordDialog.className = 'password-dialog';
-        adminPasswordDialog.setAttribute('aria-labelledby', 'password-dialog-title');
+        adminPasswordDialog.setAttribute('aria-labelledby', 'admin-dialog-title');
 
         const form = document.createElement('form');
         form.className = 'password-dialog-form';
         form.addEventListener('submit', event => {
             event.preventDefault();
+            if (channelInput.required && !channelInput.value.trim()) {
+                channelInput.focus();
+                return;
+            }
             if (!passwordInput.value.trim()) {
                 passwordInput.focus();
                 return;
@@ -418,12 +422,21 @@ function promptForAdminPassword() {
         });
 
         const title = document.createElement('h2');
-        title.id = 'password-dialog-title';
-        title.textContent = 'Admin password';
+        title.id = 'admin-dialog-title';
 
-        const label = document.createElement('label');
-        label.htmlFor = 'admin-password-input';
-        label.textContent = 'Enter admin password to proceed:';
+        const channelLabel = document.createElement('label');
+        channelLabel.htmlFor = 'admin-channel-name-input';
+        channelLabel.textContent = 'Channel name:';
+
+        const channelInput = document.createElement('input');
+        channelInput.id = 'admin-channel-name-input';
+        channelInput.type = 'text';
+        channelInput.autocomplete = 'off';
+        channelInput.maxLength = 100;
+        channelInput.placeholder = 'Enter a channel name';
+
+        const passwordLabel = document.createElement('label');
+        passwordLabel.htmlFor = 'admin-password-input';
 
         const passwordInput = document.createElement('input');
         passwordInput.id = 'admin-password-input';
@@ -441,28 +454,48 @@ function promptForAdminPassword() {
 
         const submitButton = document.createElement('button');
         submitButton.type = 'submit';
-        submitButton.textContent = 'Continue';
 
         buttons.append(cancelButton, submitButton);
-        form.append(title, label, passwordInput, buttons);
+        form.append(title, channelLabel, channelInput, passwordLabel, passwordInput, buttons);
         adminPasswordDialog.append(form);
         document.body.append(adminPasswordDialog);
         adminPasswordDialog.addEventListener('close', () => {
             const password = passwordInput.value;
+            const enteredChannelName = channelInput.value.trim();
             passwordInput.value = '';
-            resolveAdminPassword?.(
-                adminPasswordDialog.returnValue === 'submit' && password.trim()
-                    ? password
+            channelInput.value = '';
+            resolveAdminAccess?.(
+                adminPasswordDialog.returnValue === 'submit' && password.trim() &&
+                    (!channelInput.required || enteredChannelName)
+                    ? { password, channelName: enteredChannelName }
                     : null
             );
-            resolveAdminPassword = null;
+            resolveAdminAccess = null;
         });
     }
 
     return new Promise(resolve => {
-        resolveAdminPassword = resolve;
+        const channelInput = adminPasswordDialog.querySelector('#admin-channel-name-input');
+        const passwordInput = adminPasswordDialog.querySelector('#admin-password-input');
+        const title = adminPasswordDialog.querySelector('#admin-dialog-title');
+        const channelLabel = adminPasswordDialog.querySelector('label[for="admin-channel-name-input"]');
+        const passwordLabel = adminPasswordDialog.querySelector('label[for="admin-password-input"]');
+        const submitButton = adminPasswordDialog.querySelector('button[type="submit"]');
+        const includeChannelName = channelName !== null;
+
+        title.textContent = includeChannelName ? 'Add channel link' : 'Admin password';
+        channelLabel.hidden = !includeChannelName;
+        channelInput.hidden = !includeChannelName;
+        channelInput.required = includeChannelName;
+        channelInput.value = includeChannelName ? channelName : '';
+        passwordLabel.textContent = includeChannelName
+            ? 'Enter admin password to add this channel:'
+            : 'Enter admin password to proceed:';
+        submitButton.textContent = includeChannelName ? 'Add channel' : 'Continue';
+
+        resolveAdminAccess = resolve;
         adminPasswordDialog.showModal();
-        adminPasswordDialog.querySelector('input').focus();
+        (includeChannelName ? channelInput : passwordInput).focus();
     });
 }
 
@@ -495,14 +528,14 @@ function showLinkOperationError(error) {
 }
 
 async function addUrlToLibrary(controller) {
-    const password = await promptForAdminPassword();
-    if (!password) return;
-
     const value = controller.input.value.trim();
     if (!value) return;
+    const channelName = controller.selectedUrl === value ? controller.selectedChannel : '';
+    const credentials = await promptForAdminAccess({ channelName });
+    if (!credentials) return;
 
     try {
-        if (!await verifyAdminPassword(password)) return;
+        if (!await verifyAdminPassword(credentials.password)) return;
         if (getLinkByUrl(value)) {
             window.alert('This link is already in the shared list.');
             return;
@@ -511,9 +544,7 @@ async function addUrlToLibrary(controller) {
         if (!['http:', 'https:'].includes(parsedLink.protocol)) {
             throw new Error('Enter a link that starts with http:// or https://.');
         }
-        const channel = controller.selectedUrl === value && controller.selectedChannel
-            ? controller.selectedChannel
-            : parsedLink.hostname.replace(/^www\./i, '') || 'Link';
+        const channel = credentials.channelName;
         await authenticateWrite();
         const linkDocument = await addDoc(collection(db, 'links'), {
             channel,
@@ -530,14 +561,14 @@ async function addUrlToLibrary(controller) {
 }
 
 async function deleteUrlFromLibrary(controller) {
-    const password = await promptForAdminPassword();
-    if (!password) return;
+    const credentials = await promptForAdminAccess();
+    if (!credentials) return;
 
     const url = controller.input.value.trim();
     if (!url) return;
 
     try {
-        if (!await verifyAdminPassword(password)) return;
+        if (!await verifyAdminPassword(credentials.password)) return;
         const link = getLinkByUrl(url);
         if (!link) return;
         if (link.status === 'default') {
